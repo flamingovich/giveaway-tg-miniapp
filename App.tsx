@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TelegramUser, ContestStep, Contest, WinnerInfo, UserProfile, ProjectPreset, Currency, ContestType, YoutubeConfig } from './types';
+import { mergeServerWithOptimisticLocal } from './lib/merge-contests';
 import { CoverCropModal } from './components/CoverCropModal';
 import usdtCoin1Url from './bg_images/usdt1.png';
 import usdtCoin2Url from './bg_images/usdt2.png';
@@ -529,14 +530,23 @@ const App: React.FC = () => {
         console.error("Exchange Rate API Error:", e);
       }
 
-      if (fetchedContestsData) {
-        const { updated, hasChanges } = completeExpiredContests(
-          fetchedContestsData,
-          fetchedAvatarsData || avatars
-        );
-        setContests(updated);
-        if (hasChanges) {
-          await apiKvSet(DB_KEY, updated);
+      if (Array.isArray(fetchedContestsData)) {
+        let persistAfterExpiry = false;
+        let listToPersist: Contest[] | undefined;
+        setContests((prev) => {
+          const merged = mergeServerWithOptimisticLocal(prev, fetchedContestsData as Contest[]);
+          const { updated, hasChanges } = completeExpiredContests(
+            merged,
+            fetchedAvatarsData || avatars
+          );
+          if (hasChanges) {
+            persistAfterExpiry = true;
+            listToPersist = updated;
+          }
+          return updated;
+        });
+        if (persistAfterExpiry && listToPersist) {
+          await apiKvSet(DB_KEY, listToPersist);
         }
       }
 
@@ -821,23 +831,6 @@ const App: React.FC = () => {
     
     await saveContests([newC, ...contests]);
 
-    if (!isNewTest) {
-      try {
-        const durationLabel = DURATION_OPTIONS.find(opt => opt.value === newDuration)?.label || 'не указано';
-        const prizeDisplay = newPrizeType === 'money' ? `${parseInt(newPrize)}₽` : newCustomPrize;
-        fetch('/api/notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: contestTitle,
-            prize: prizeDisplay,
-            winners: newWinners,
-            duration: durationLabel
-          })
-        });
-      } catch (e) { console.error("Notification trigger failed", e); }
-    }
-
     setNewTitle(''); setNewDescription(''); setNewPrize(''); setNewWinners('1'); setNewProjectId('');
     setNewYtVideoUrl(''); setNewYtRequireLike(false); setNewYtRequireComment(false); setNewYtWatchTime('1');
     setNewPrizeType('money'); setNewCustomPrize(''); setNewImageUrl('');
@@ -1040,8 +1033,10 @@ const App: React.FC = () => {
       const myTicket = data.ticketNumber;
       setUserTicket(myTicket);
 
-      if (data.updatedContests) {
-        setContests(data.updatedContests);
+      if (Array.isArray(data.updatedContests)) {
+        setContests((prev) =>
+          mergeServerWithOptimisticLocal(prev, data.updatedContests as Contest[])
+        );
       }
 
       const newSaved = [...profile.savedPayouts];
@@ -1143,11 +1138,11 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen bg-matte-black text-[#E2E2E6] overflow-hidden flex flex-col font-sans selection:bg-gold/30 relative">
-      <div className="absolute top-[-5%] left-[-10%] w-[60%] h-[50%] bg-gold/5 blur-[100px] rounded-full animate-glow-slow pointer-events-none z-0"></div>
-      <div className="absolute bottom-[20%] right-[-10%] w-[50%] h-[40%] bg-gold/3 blur-[80px] rounded-full animate-glow-fast pointer-events-none z-0"></div>
+      <div className="absolute top-[-5%] left-[-10%] w-[60%] h-[50%] bg-gold/5 blur-[100px] rounded-full opacity-[0.45] pointer-events-none z-0"></div>
+      <div className="absolute bottom-[20%] right-[-10%] w-[50%] h-[40%] bg-gold/3 blur-[80px] rounded-full opacity-[0.35] pointer-events-none z-0"></div>
 
       <div className="px-4 py-5 bg-soft-gray/80 backdrop-blur-lg border-b border-border-gray z-30 shadow-xl relative overflow-hidden shrink-0 shadow-gold/5">
-        <div className="absolute top-[-20%] right-[-10%] w-[40%] h-[150%] bg-gold/5 blur-[50px] rounded-full pointer-events-none animate-glow-slow"></div>
+        <div className="absolute top-[-20%] right-[-10%] w-[40%] h-[150%] bg-gold/5 blur-[50px] rounded-full pointer-events-none opacity-[0.45]"></div>
         <div className="flex justify-between items-start gap-3 mb-5 relative z-10">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
@@ -2632,108 +2627,12 @@ const App: React.FC = () => {
       />
 
       <style>{`
-        @keyframes glow-slow {
-          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.4; }
-          50% { transform: translate(5%, 3%) scale(1.1); opacity: 0.6; }
-        }
-        @keyframes glow-fast {
-          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.3; }
-          50% { transform: translate(-4%, -6%) scale(1.05); opacity: 0.5; }
-        }
         @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse-subtle { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
         @keyframes coinLevitate {
           0%, 100% { transform: translate3d(0, 0, 0); }
           50% { transform: translate3d(0, -12px, 0); }
         }
-        @keyframes payoutBgGlowA {
-          0%, 100% { opacity: 0.38; transform: scale(1) translate3d(0, 0, 0); }
-          50% { opacity: 0.72; transform: scale(1.1) translate3d(2%, -1%, 0); }
-        }
-        @keyframes payoutBgGlowB {
-          0%, 100% { opacity: 0.32; transform: scale(1.02) translate3d(0, 0, 0); }
-          50% { opacity: 0.65; transform: scale(1.14) translate3d(-2%, 2%, 0); }
-        }
-        @keyframes payoutBgGlowC {
-          0%, 100% { opacity: 0.26; transform: scale(1) translate3d(0, 0, 0); }
-          48% { opacity: 0.55; transform: scale(1.18) translate3d(1%, 2%, 0); }
-        }
-        @keyframes payoutBgGlowD {
-          0%, 100% { opacity: 0.22; transform: scale(1.04) translate3d(0, 0, 0); }
-          50% { opacity: 0.48; transform: scale(1.08) translate3d(-1%, -2%, 0); }
-        }
-        @keyframes referralGoldBgA {
-          0%, 100% { opacity: 0.52; transform: scale(1) translate3d(0, 0, 0); }
-          50% { opacity: 0.88; transform: scale(1.1) translate3d(2.5%, -2%, 0); }
-        }
-        @keyframes referralGoldBgB {
-          0%, 100% { opacity: 0.42; transform: scale(1.02) translate3d(0, 0, 0); }
-          50% { opacity: 0.78; transform: scale(1.16) translate3d(-3%, 2.5%, 0); }
-        }
-        @keyframes referralGoldBgC {
-          0%, 100% { opacity: 0.38; transform: scale(1) translate3d(0, 0, 0); }
-          48% { opacity: 0.72; transform: scale(1.12) translate3d(2%, 2%, 0); }
-        }
-        @keyframes referralGoldBgD {
-          0%, 100% { opacity: 0.36; transform: scale(1.03) translate3d(0, 0, 0); }
-          50% { opacity: 0.68; transform: scale(1.1) translate3d(-2%, -2.5%, 0); }
-        }
-        @keyframes payoutCardGlowA {
-          0%, 100% { opacity: 0.55; transform: scale(0.94); }
-          50% { opacity: 0.95; transform: scale(1.08); }
-        }
-        @keyframes payoutCardGlowB {
-          0%, 100% { opacity: 0.35; transform: scale(1.06); }
-          50% { opacity: 0.7; transform: scale(0.98); }
-        }
-        @keyframes ticketCardGlowA {
-          0%, 100% { opacity: 0.5; transform: scale(1); }
-          50% { opacity: 0.72; transform: scale(1.04); }
-        }
-        @keyframes ticketCardGlowB {
-          0%, 100% { opacity: 0.38; transform: scale(1.02); }
-          50% { opacity: 0.55; transform: scale(0.99); }
-        }
-        @keyframes homeMainGlowA {
-          0%, 100% { opacity: 0.26; transform: scale(1) translate3d(0, 0, 0); }
-          50% { opacity: 0.5; transform: scale(1.15) translate3d(2%, -2%, 0); }
-        }
-        @keyframes homeMainGlowB {
-          0%, 100% { opacity: 0.24; transform: scale(1.02) translate3d(0, 0, 0); }
-          50% { opacity: 0.48; transform: scale(1.12) translate3d(-2%, 2%, 0); }
-        }
-        @keyframes homeMainGlowC {
-          0%, 100% { opacity: 0.2; transform: scale(1) translate3d(0, 0, 0); }
-          50% { opacity: 0.42; transform: scale(1.16) translate3d(1.5%, 2.5%, 0); }
-        }
-        @keyframes emptyActiveGlowA {
-          0%, 100% { opacity: 0.28; transform: scale(1) translate3d(0, 0, 0); }
-          50% { opacity: 0.55; transform: scale(1.14) translate3d(2%, -1.5%, 0); }
-        }
-        @keyframes emptyActiveGlowB {
-          0%, 100% { opacity: 0.22; transform: scale(1.03) translate3d(0, 0, 0); }
-          50% { opacity: 0.45; transform: scale(1.1) translate3d(-1.5%, 2%, 0); }
-        }
-        .payout-bg-glow-a { animation: payoutBgGlowA 8s ease-in-out infinite; }
-        .payout-bg-glow-b { animation: payoutBgGlowB 9.5s ease-in-out infinite; animation-delay: -2.5s; }
-        .payout-bg-glow-c { animation: payoutBgGlowC 7.2s ease-in-out infinite; animation-delay: -1.2s; }
-        .payout-bg-glow-d { animation: payoutBgGlowD 6.4s ease-in-out infinite; animation-delay: -3s; }
-        .home-main-glow-a { animation: homeMainGlowA 9s ease-in-out infinite; }
-        .home-main-glow-b { animation: homeMainGlowB 10.5s ease-in-out infinite; animation-delay: -2.4s; }
-        .home-main-glow-c { animation: homeMainGlowC 8.2s ease-in-out infinite; animation-delay: -1.3s; }
-        .empty-active-glow-a { animation: emptyActiveGlowA 6.8s ease-in-out infinite; }
-        .empty-active-glow-b { animation: emptyActiveGlowB 7.6s ease-in-out infinite; animation-delay: -2.1s; }
-        .referral-gold-bg-a { animation: referralGoldBgA 7.5s ease-in-out infinite; }
-        .referral-gold-bg-b { animation: referralGoldBgB 9s ease-in-out infinite; animation-delay: -2.2s; }
-        .referral-gold-bg-c { animation: referralGoldBgC 6.8s ease-in-out infinite; animation-delay: -1s; }
-        .referral-gold-bg-d { animation: referralGoldBgD 7.8s ease-in-out infinite; animation-delay: -3.4s; }
-        .payout-card-glow-a { animation: payoutCardGlowA 4.2s ease-in-out infinite; }
-        .payout-card-glow-b { animation: payoutCardGlowB 3.4s ease-in-out infinite; animation-delay: -1.1s; }
-        .ticket-card-glow-a { animation: ticketCardGlowA 5.5s ease-in-out infinite; }
-        .ticket-card-glow-b { animation: ticketCardGlowB 4.8s ease-in-out infinite; animation-delay: -1.4s; }
-        
-        .animate-glow-slow { animation: glow-slow 18s ease-in-out infinite; }
-        .animate-glow-fast { animation: glow-fast 12s ease-in-out infinite; }
         .animate-spin-slow { animation: spin-slow 8s linear infinite; }
         .animate-pulse-subtle { animation: pulse-subtle 2s ease-in-out infinite; }
         

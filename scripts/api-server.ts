@@ -48,6 +48,8 @@ const routeLoaders: Record<string, () => Promise<{ default: (req: Request) => Pr
   '/api/notify': () => import('../api/notify.ts'),
   '/api/webhook': () => import('../api/webhook.ts'),
   '/api/dev-auth': () => import('../api/dev-auth.ts'),
+  '/api/admin-login': () => import('../api/admin-login.ts'),
+  '/api/admin': () => import('../api/admin.ts'),
 };
 
 createServer(async (req, res) => {

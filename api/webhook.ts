@@ -36,6 +36,14 @@ async function sendDocument(chatId: number, htmlContent: string, filename: strin
   });
 }
 
+async function registerUserId(userId: number) {
+  const users: number[] = (await kvGet<number[]>(USERS_LIST_KEY)) || [];
+  if (!users.includes(userId)) {
+    users.push(userId);
+    await kvSet(USERS_LIST_KEY, users);
+  }
+}
+
 async function getChatInfo(userId: number) {
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${userId}`);
@@ -155,6 +163,11 @@ export default async function handler(req: Request) {
 
     const userId = message.from.id;
     const text = message.text || '';
+    const chatType = message.chat?.type;
+
+    if (chatType === 'private' && typeof text === 'string' && text.trim().startsWith('/start')) {
+      await registerUserId(userId);
+    }
 
     if (userId !== ADMIN_ID) return new Response('OK', { status: 200 });
 

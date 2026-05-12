@@ -95,13 +95,16 @@ export default async function handler(req: Request) {
 
     await kvSet(DB_KEY, contests);
 
+    /** После merge в kvSet на диске могут быть другие id; не отдаём урезанный in-memory массив клиенту. */
+    const latestContests = (await kvGet<any[]>(DB_KEY)) || [];
+
     const myTicketFinal = nextContest.giveawayParticipants[nextContest.giveawayParticipants.length - 1].ticketNumber;
 
     return new Response(
       JSON.stringify({
         success: true,
         ticketNumber: myTicketFinal,
-        updatedContests: contests,
+        updatedContests: latestContests,
       }),
       {
         status: 200,

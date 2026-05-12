@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergeContestsNoDelete } from './merge-contests';
 
 type StorageState = {
   beef_contests_v7_final: any[];
@@ -51,30 +52,10 @@ async function writeState(state: StorageState) {
 }
 
 export async function kvGet<T = any>(key: keyof StorageState | string): Promise<T | null> {
+  await writeChain;
   const state = await readState();
   const value = (state as Record<string, unknown>)[key];
   return (value ?? null) as T | null;
-}
-
-function mergeContestsNoDelete(current: any[], incoming: any[]) {
-  const byId = new Map<string, any>();
-
-  for (const contest of current) {
-    if (contest && typeof contest.id === 'string') {
-      byId.set(contest.id, contest);
-    }
-  }
-
-  for (const contest of incoming) {
-    if (contest && typeof contest.id === 'string') {
-      const prev = byId.get(contest.id) ?? {};
-      byId.set(contest.id, { ...prev, ...contest });
-    }
-  }
-
-  const merged = Array.from(byId.values());
-  merged.sort((a, b) => (Number(b?.createdAt || 0) - Number(a?.createdAt || 0)));
-  return merged;
 }
 
 export async function kvSet(key: keyof StorageState | string, value: any) {
@@ -101,6 +82,16 @@ export async function clearContests() {
     const state = await readState();
     const nextState = { ...state, beef_contests_v7_final: [] };
     await writeState(nextState);
+  });
+  await writeChain;
+}
+
+export async function removeContestById(contestId: string) {
+  writeChain = writeChain.then(async () => {
+    const state = await readState();
+    const list = Array.isArray(state.beef_contests_v7_final) ? state.beef_contests_v7_final : [];
+    const next = list.filter((c: any) => c && c.id !== contestId);
+    await writeState({ ...state, beef_contests_v7_final: next });
   });
   await writeChain;
 }
