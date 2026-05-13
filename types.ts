@@ -14,6 +14,8 @@ export interface WinnerInfo {
   avatarUrl?: string;
   payoutAddress?: string;
   userId?: number;
+  username?: string;
+  isHiddenProfile?: boolean;
 }
 
 /** Зафиксированный реальный участник (и в настоящем, и в фейковом розыгрыше — ты сам реальный человек). */
@@ -22,6 +24,9 @@ export interface GiveawayParticipantEntry {
   ticketNumber: number;
   displayName: string;
   payoutAddress?: string;
+  username?: string;
+  avatarUrl?: string;
+  hideWinnerProfile?: boolean;
 }
 
 export interface UserProfile {
@@ -29,6 +34,7 @@ export interface UserProfile {
   payoutType: PayoutType;
   participationCount: number;
   totalWon: number;
+  hideWinnerProfile?: boolean;
   savedPayouts: Array<{ type: PayoutType; value: string }>;
   participatedContests: Record<string, number>; // contestId -> ticketNumber
   verifiedProjects?: string[]; // Список ID проектов, где пройдена регистрация
@@ -68,6 +74,7 @@ export interface Contest {
   isCompleted?: boolean;
   winners?: WinnerInfo[];
   winnerCount: number;
+  realWinnerCount?: number;
   lastTicketNumber: number;
   seed?: string;
   isTest?: boolean; // Флаг тестового розыгрыша

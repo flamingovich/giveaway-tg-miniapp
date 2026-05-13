@@ -7,7 +7,15 @@ export default async function handler(req: Request) {
 
   try {
     const body = await req.json();
-    const { contestId, userId, displayName, payoutAddress } = body;
+    const {
+      contestId,
+      userId,
+      displayName,
+      payoutAddress,
+      username,
+      avatarUrl,
+      hideWinnerProfile,
+    } = body;
     if (!contestId || !userId || typeof userId !== 'number') {
       return new Response(JSON.stringify({ error: 'Bad Request' }), {
         status: 400,
@@ -48,6 +56,11 @@ export default async function handler(req: Request) {
       typeof payoutAddress === 'string' && payoutAddress.trim()
         ? payoutAddress.trim()
         : undefined;
+    const normalizedUsername =
+      typeof username === 'string' && username.trim() ? username.trim() : undefined;
+    const normalizedAvatar =
+      typeof avatarUrl === 'string' && avatarUrl.trim() ? avatarUrl.trim() : undefined;
+    const shouldHideProfile = Boolean(hideWinnerProfile);
 
     const isFake = contest.isFakeGiveaway === true;
     let nextContest: Record<string, any>;
@@ -65,6 +78,9 @@ export default async function handler(req: Request) {
         ticketNumber: myTicket,
         displayName: disp,
         payoutAddress: payout,
+        username: normalizedUsername,
+        avatarUrl: normalizedAvatar,
+        hideWinnerProfile: shouldHideProfile,
       };
       nextContest = {
         ...contest,
@@ -81,6 +97,9 @@ export default async function handler(req: Request) {
         ticketNumber: myTicket,
         displayName: disp,
         payoutAddress: payout,
+        username: normalizedUsername,
+        avatarUrl: normalizedAvatar,
+        hideWinnerProfile: shouldHideProfile,
       };
       nextContest = {
         ...contest,

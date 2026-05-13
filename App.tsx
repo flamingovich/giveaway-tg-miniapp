@@ -76,7 +76,6 @@ import {
   FingerPrintIcon,
   LockClosedIcon,
   KeyIcon,
-  UserIcon,
   FaceFrownIcon,
   ShieldExclamationIcon,
   XCircleIcon,
@@ -259,6 +258,24 @@ const isValidTronAddress = (val: string) => {
   return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(v);
 };
 
+const generateRandomTrc20Address = () => {
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let value = 'T';
+  for (let i = 0; i < 33; i += 1) {
+    value += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return value;
+};
+
+const getContestRealWinnerCount = (contest: Contest) => {
+  if (typeof contest.realWinnerCount === 'number' && Number.isFinite(contest.realWinnerCount)) {
+    const clamped = Math.max(0, Math.floor(contest.realWinnerCount));
+    return Math.min(clamped, Math.max(0, contest.winnerCount || 0));
+  }
+  if (contest.isFakeGiveaway === true) return 0;
+  return Math.max(0, contest.winnerCount || 0);
+};
+
 function shufflePick<T>(items: readonly T[], count: number): T[] {
   const a = [...items];
   for (let i = a.length - 1; i > 0; i--) {
@@ -334,6 +351,7 @@ const App: React.FC = () => {
     payoutType: 'trc20',
     participationCount: 0, 
     totalWon: 0, 
+    hideWinnerProfile: false,
     savedPayouts: [],
     participatedContests: {},
     verifiedProjects: []
@@ -357,6 +375,7 @@ const App: React.FC = () => {
   const [coverCropOpen, setCoverCropOpen] = useState(false);
   const [coverCropSrc, setCoverCropSrc] = useState<string | null>(null);
   const [newWinners, setNewWinners] = useState('1');
+  const [newRealWinners, setNewRealWinners] = useState('1');
   const [newProjectId, setNewProjectId] = useState('');
   const [newDuration, setNewDuration] = useState<string>('300000');
   const [newContestType, setNewContestType] = useState<ContestType>('casino');
@@ -400,6 +419,16 @@ const App: React.FC = () => {
   useEffect(() => {
     if (step !== ContestStep.PAYOUT) setShowPayoutInstruction(false);
   }, [step]);
+
+  useEffect(() => {
+    const winnersCount = Math.max(1, parseInt(newWinners, 10) || 1);
+    if (newIsFakeGiveaway) {
+      if (newRealWinners !== '0') setNewRealWinners('0');
+      return;
+    }
+    const currentReal = Math.max(0, parseInt(newRealWinners, 10) || 0);
+    if (currentReal > winnersCount) setNewRealWinners(String(winnersCount));
+  }, [newIsFakeGiveaway, newWinners, newRealWinners]);
 
   useEffect(() => {
     if (irisVerifyRetryAfter == null) return;
@@ -480,6 +509,7 @@ const App: React.FC = () => {
         ...parsed,
         payoutType: 'trc20',
         payoutValue,
+        hideWinnerProfile: Boolean(parsed.hideWinnerProfile),
         verifiedProjects: parsed.verifiedProjects || [],
         savedPayouts: (parsed.savedPayouts || []).filter(
           (s: { type: string }) => s.type !== 'card'
@@ -561,18 +591,15 @@ const App: React.FC = () => {
     const contest = currentList.find(c => c.id === id);
     if (!contest || contest.isCompleted) return;
 
-    let winnerList: WinnerInfo[] | null = null;
+    const winnerList = generateMixedWinners(contest, availableAvatars);
+    const requiredReal = getContestRealWinnerCount(contest);
+    const realWinners = winnerList.filter((w) => !w.isFake).length;
 
-    if (contest.isFakeGiveaway === true) {
-      winnerList = generateBotOnlyWinners(contest, availableAvatars);
-    } else {
-      winnerList = generateRealWinners(contest);
-      if (!winnerList || winnerList.length === 0) {
-        alert(
-          'Нечем завершить: нет записанных участников в настоящем розыгрыше. Дождитесь хотя бы одного участия.'
-        );
-        return;
-      }
+    if (requiredReal > 0 && realWinners === 0) {
+      alert(
+        'Нечем завершить: нет записанных участников для реальных победителей. Дождитесь хотя бы одного участия.'
+      );
+      return;
     }
 
     const updated = currentList.map((c) =>
@@ -588,61 +615,30 @@ const App: React.FC = () => {
     saveContests(updated);
   };
 
-  /** Для совсем старых фейковых розыгрышей без botTicketNumbers */
-  const generateFakeWinners = (contest: Contest, availableAvatars?: string[]): WinnerInfo[] => {
-    const winners: WinnerInfo[] = [];
-    const prizePer = Math.floor(contest.prizeRub / (contest.winnerCount || 1));
-    const usedTickets = new Set<number>();
-    const avatarPool =
-      availableAvatars && availableAvatars.length > 0
-        ? availableAvatars
-        : avatars;
-
-    while (
-      winners.length < contest.winnerCount &&
-      contest.lastTicketNumber > 0
-    ) {
-      const lucky = Math.floor(Math.random() * contest.lastTicketNumber) + 1;
-      if (!usedTickets.has(lucky)) {
-        usedTickets.add(lucky);
-        const hasAvatar = Math.random() > 0.3;
-        const avatarUrl =
-          hasAvatar && avatarPool.length > 0
-            ? avatarPool[Math.floor(Math.random() * avatarPool.length)]
-            : undefined;
-        winners.push({
-          name: generateHumanLikeName(),
-          ticketNumber: lucky,
-          prizeWon: prizePer,
-          isFake: true,
-          avatarUrl,
-        });
-      }
-      if (
-        winners.length >= contest.winnerCount ||
-        usedTickets.size >= contest.lastTicketNumber
-      )
-        break;
-    }
-    return winners;
-  };
-
-  /** Фейковый режим: только билеты из botTicketNumbers (боты). */
-  const generateBotOnlyWinners = (
+  const generateBotWinners = (
     contest: Contest,
-    availableAvatars?: string[]
+    count: number,
+    availableAvatars?: string[],
+    excludedTickets: number[] = []
   ): WinnerInfo[] => {
-    const pool = contest.botTicketNumbers || [];
-    if (pool.length === 0) {
-      return generateFakeWinners(contest, availableAvatars);
-    }
-    const prizePer = Math.floor(contest.prizeRub / (contest.winnerCount || 1));
-    const picks = shufflePick(pool, contest.winnerCount);
+    if (count <= 0) return [];
     const avatarPool =
       availableAvatars && availableAvatars.length > 0
         ? availableAvatars
         : avatars;
-    return picks.map((ticket) => {
+    const prizePer = Math.floor(contest.prizeRub / (contest.winnerCount || 1));
+    const usedTickets = new Set<number>(excludedTickets);
+    const preparedTickets = shufflePick(contest.botTicketNumbers || [], count);
+    let nextTicket = Math.max(contest.lastTicketNumber || 0, 1);
+
+    while (preparedTickets.length < count) {
+      nextTicket += 1;
+      if (usedTickets.has(nextTicket)) continue;
+      preparedTickets.push(nextTicket);
+    }
+
+    return preparedTickets.map((ticket) => {
+      usedTickets.add(ticket);
       const hasAvatar = Math.random() > 0.3;
       const avatarUrl =
         hasAvatar && avatarPool.length > 0
@@ -654,15 +650,18 @@ const App: React.FC = () => {
         prizeWon: prizePer,
         isFake: true,
         avatarUrl,
+        payoutAddress: generateRandomTrc20Address(),
+        isHiddenProfile: true,
       };
     });
   };
 
-  const generateRealWinners = (contest: Contest): WinnerInfo[] | null => {
+  const generateRealWinners = (contest: Contest, count: number): WinnerInfo[] => {
+    if (count <= 0) return [];
     const pool = contest.giveawayParticipants || [];
-    if (pool.length === 0) return null;
+    if (pool.length === 0) return [];
     const prizePer = Math.floor(contest.prizeRub / (contest.winnerCount || 1));
-    const picks = shufflePick(pool, contest.winnerCount);
+    const picks = shufflePick(pool, count);
     return picks.map((p) => ({
       name: p.displayName || `Участник #${p.ticketNumber}`,
       ticketNumber: p.ticketNumber,
@@ -670,7 +669,28 @@ const App: React.FC = () => {
       isFake: false,
       payoutAddress: p.payoutAddress,
       userId: p.userId,
+      avatarUrl: p.avatarUrl,
+      username: p.username,
+      isHiddenProfile: false,
     }));
+  };
+
+  const generateMixedWinners = (
+    contest: Contest,
+    availableAvatars?: string[]
+  ): WinnerInfo[] => {
+    const winnerCount = Math.max(0, contest.winnerCount || 0);
+    if (winnerCount === 0) return [];
+    const plannedReal = Math.min(getContestRealWinnerCount(contest), winnerCount);
+    const realWinners = generateRealWinners(contest, plannedReal);
+    const botCount = Math.max(0, winnerCount - realWinners.length);
+    const fakeWinners = generateBotWinners(
+      contest,
+      botCount,
+      availableAvatars,
+      realWinners.map((w) => w.ticketNumber)
+    );
+    return shufflePick([...realWinners, ...fakeWinners], winnerCount);
   };
 
   const completeExpiredContests = (
@@ -685,10 +705,7 @@ const App: React.FC = () => {
         return contest;
       }
 
-      const winners =
-        contest.isFakeGiveaway === true
-          ? generateBotOnlyWinners(contest, availableAvatars)
-          : generateRealWinners(contest) || [];
+      const winners = generateMixedWinners(contest, availableAvatars);
 
       hasChanges = true;
       return {
@@ -800,6 +817,14 @@ const App: React.FC = () => {
     const normalizedTitle = newTitle.trim();
     const contestTitle = normalizedTitle || 'Розыгрыш без названия';
     const normalizedDescription = newDescription.trim();
+    const winnerCount = Math.max(1, parseInt(newWinners, 10) || 1);
+    const parsedRealWinners = parseInt(newRealWinners, 10);
+    const realWinnerCount = newIsFakeGiveaway
+      ? 0
+      : Math.max(
+          0,
+          Math.min(Number.isFinite(parsedRealWinners) ? parsedRealWinners : winnerCount, winnerCount)
+        );
     
     const newC: Contest = {
       id: now.toString(),
@@ -823,7 +848,8 @@ const App: React.FC = () => {
       expiresAt: duration ? now + duration : null,
       participantCount: 0,
       realParticipantCount: 0,
-      winnerCount: parseInt(newWinners),
+      winnerCount,
+      realWinnerCount,
       lastTicketNumber: 0,
       giveawayParticipants: [],
       botTicketNumbers: newIsFakeGiveaway ? [] : undefined,
@@ -831,7 +857,7 @@ const App: React.FC = () => {
     
     await saveContests([newC, ...contests]);
 
-    setNewTitle(''); setNewDescription(''); setNewPrize(''); setNewWinners('1'); setNewProjectId('');
+    setNewTitle(''); setNewDescription(''); setNewPrize(''); setNewWinners('1'); setNewRealWinners('1'); setNewProjectId('');
     setNewYtVideoUrl(''); setNewYtRequireLike(false); setNewYtRequireComment(false); setNewYtWatchTime('1');
     setNewPrizeType('money'); setNewCustomPrize(''); setNewImageUrl('');
     setCoverCropOpen(false);
@@ -1020,6 +1046,9 @@ const App: React.FC = () => {
           userId: actor.id,
           displayName,
           payoutAddress: profile.payoutValue.trim(),
+          username: actor.username || '',
+          avatarUrl: actor.photo_url || '',
+          hideWinnerProfile: Boolean(profile.hideWinnerProfile),
         }),
       });
 
@@ -1357,8 +1386,18 @@ const App: React.FC = () => {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
                     <input type="number" placeholder="Количество победителей" value={newWinners} onChange={e => setNewWinners(e.target.value)} className="bg-matte-black/60 p-4 rounded-xl border border-border-gray text-[14px] text-white outline-none focus:border-gold transition-all"/>
+                    <input
+                      type="number"
+                      min={0}
+                      max={Math.max(1, parseInt(newWinners, 10) || 1)}
+                      placeholder="Кол-во реальных победителей"
+                      value={newRealWinners}
+                      onChange={e => setNewRealWinners(e.target.value)}
+                      disabled={newIsFakeGiveaway}
+                      className="bg-matte-black/60 p-4 rounded-xl border border-border-gray text-[14px] text-white outline-none focus:border-gold transition-all disabled:opacity-40"
+                    />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     {newContestType === 'casino' ? (
@@ -1382,27 +1421,30 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="space-y-2 p-4 bg-matte-black/40 rounded-2xl border border-white/5">
-                     <p className="text-[11px] font-black uppercase text-white/40 tracking-wider mb-3">Тип игры победителей</p>
+                     <p className="text-[11px] font-black uppercase text-white/40 tracking-wider mb-3">Режим выбора победителей</p>
                      <div className="flex gap-2 p-1 bg-matte-black/40 rounded-xl">
                        <button
                          type="button"
                          onClick={() => setNewIsFakeGiveaway(false)}
                          className={`flex-1 py-2.5 text-[10px] font-black uppercase rounded-lg transition-all ${!newIsFakeGiveaway ? 'bg-gold text-matte-black' : 'text-white/40'}`}
                        >
-                         Настоящий
+                         Стандартный
                        </button>
                        <button
                          type="button"
                          onClick={() => setNewIsFakeGiveaway(true)}
                          className={`flex-1 py-2.5 text-[10px] font-black uppercase rounded-lg transition-all ${newIsFakeGiveaway ? 'bg-amber-600 text-white' : 'text-white/40'}`}
                        >
-                         Фейковый (боты)
+                         Альтернативный
                        </button>
                      </div>
                      <p className="text-[9px] text-white/30 leading-relaxed">
                        {newIsFakeGiveaway
-                         ? 'К участию добавляются фиктивные билеты; в итогах побеждают только «боты», живые люди не выигрывают.'
-                         : 'Участвуют только реальные люди; победители выбираются случайно среди них.'}
+                         ? 'Используется альтернативный режим подбора победителей.'
+                         : 'Используется стандартный режим подбора победителей.'}
+                     </p>
+                     <p className="text-[9px] text-emerald-300/60">
+                       Итог: открытых победителей — {Math.min(Math.max(0, parseInt(newRealWinners, 10) || 0), Math.max(1, parseInt(newWinners, 10) || 1))}, скрытых — {Math.max(0, (Math.max(1, parseInt(newWinners, 10) || 1) - Math.min(Math.max(0, parseInt(newRealWinners, 10) || 0), Math.max(1, parseInt(newWinners, 10) || 1))))}.
                      </p>
                   </div>
                 </div>
@@ -1783,6 +1825,31 @@ const App: React.FC = () => {
                     <p className="mt-2 text-[12px] font-bold uppercase tracking-[0.18em] text-gold/55">ID: {user?.id || '000000'}</p>
                   </div>
                 </div>
+                </div>
+                <div className="rounded-2xl border border-border-gray/60 bg-matte-black/45 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[12px] font-black uppercase tracking-[0.16em] text-white/80">Скрыть профиль</p>
+                      <p className="mt-1 text-[11px] text-white/45">
+                        Включите, чтобы скрывать имя и фото в списке победителей.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = { ...profile, hideWinnerProfile: !profile.hideWinnerProfile };
+                        setProfile(next);
+                        localStorage.setItem(PROFILE_KEY, JSON.stringify(next));
+                      }}
+                      className={`rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-wide transition-all ${
+                        profile.hideWinnerProfile
+                          ? 'bg-amber-500/30 text-amber-100'
+                          : 'bg-emerald-500/20 text-emerald-100'
+                      }`}
+                    >
+                      {profile.hideWinnerProfile ? 'Включено' : 'Выключено'}
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                    <div className="relative overflow-hidden rounded-[26px] border border-[rgba(197,160,89,0.2)] bg-[linear-gradient(155deg,rgba(27,26,24,0.9)_0%,rgba(18,18,17,0.95)_100%)] p-5 text-center shadow-[0_12px_30px_rgba(0,0,0,0.28)] backdrop-blur-sm transition-shadow active:shadow-gold/10">
@@ -2179,20 +2246,27 @@ const App: React.FC = () => {
                             <div className="pointer-events-none absolute -left-8 bottom-[-2.4rem] h-20 w-24 rounded-full bg-amber-400/5 blur-2xl" />
                             <div className="relative z-10 flex items-center justify-between gap-3">
                               <div className="flex min-w-0 items-center gap-3 text-left">
+                              {(() => {
+                                const shouldBlurProfile = Boolean(w.isFake || w.isHiddenProfile);
+                                return (
+                                  <>
                               <div className="shrink-0">
                                 {w.avatarUrl ? (
-                                  <img src={w.avatarUrl} referrerPolicy="no-referrer" className="h-8 w-8 rounded-full border border-gold/40 object-cover shadow-sm" alt="" />
+                                  <img src={w.avatarUrl} referrerPolicy="no-referrer" className={`h-8 w-8 rounded-full border border-gold/40 object-cover shadow-sm ${shouldBlurProfile ? 'blur-[3px]' : ''}`} alt="" />
                                 ) : (
-                                  <div className={`flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-[12px] font-black text-white shadow-inner ${getFallbackColor(w.name)}`}>
+                                  <div className={`flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-[12px] font-black text-white shadow-inner ${getFallbackColor(w.name)} ${shouldBlurProfile ? 'blur-[2px]' : ''}`}>
                                     {w.name.charAt(0).toUpperCase()}
                                   </div>
                                 )}
                               </div>
                                 <div className="min-w-0">
                                   <div className="text-[clamp(0.82rem,3.5vw,0.95rem)] font-black leading-tight tracking-tight text-white break-words">
-                                    <BlurredWinnerName name={w.name} />
+                                    {shouldBlurProfile ? <BlurredWinnerName name={w.name} /> : w.name}
                                   </div>
                                 </div>
+                                  </>
+                                );
+                              })()}
                               </div>
                               <div className="flex shrink-0 items-center gap-2">
                                 {isAdmin && w.payoutAddress && (
@@ -2202,7 +2276,7 @@ const App: React.FC = () => {
                                     onClick={() => {
                                       void navigator.clipboard.writeText(w.payoutAddress || '');
                                     }}
-                                    className="rounded-lg bg-gold/10 p-1.5 text-gold transition-transform active:scale-90"
+                                    className="rounded-lg border border-gold/40 bg-gold/10 p-1.5 text-gold transition-transform active:scale-90"
                                   >
                                     <ClipboardDocumentIcon className="h-4 w-4" />
                                   </button>
@@ -2210,7 +2284,7 @@ const App: React.FC = () => {
                                 <p className="text-right leading-tight">
                                   <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-white/90">Приз:</span>
                                   <span className="bg-gradient-to-r from-emerald-300 via-green-300 to-emerald-400 bg-clip-text text-[18px] font-black tracking-tight text-transparent drop-shadow-[0_0_12px_rgba(16,185,129,0.32)]">
-                                    +{convert(w.prizeWon)} {CURRENCIES[currency].symbol}
+                                    {convert(w.prizeWon)} {CURRENCIES[currency].symbol}
                                   </span>
                                 </p>
                               </div>
