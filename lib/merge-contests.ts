@@ -42,6 +42,26 @@ export function mergeContestsNoDelete(current: any[], incoming: any[]): any[] {
   for (const contest of incoming) {
     if (contest && typeof contest.id === 'string') {
       const prev = byId.get(contest.id) ?? {};
+      const prevHasFrozenWinners =
+        prev?.isCompleted === true &&
+        Array.isArray(prev?.winners) &&
+        prev.winners.length > 0;
+      const nextHasWinners =
+        Array.isArray(contest?.winners) && contest.winners.length > 0;
+
+      // Победители завершённого розыгрыша фиксируются после первого сохранения:
+      // не позволяем последующим конкурентным клиентским записям их перезаписывать.
+      if (prevHasFrozenWinners && contest?.isCompleted === true && nextHasWinners) {
+        byId.set(contest.id, {
+          ...prev,
+          ...contest,
+          isCompleted: true,
+          winners: prev.winners,
+          seed: prev.seed ?? contest.seed,
+        });
+        continue;
+      }
+
       byId.set(contest.id, { ...prev, ...contest });
     }
   }
