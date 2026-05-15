@@ -128,11 +128,20 @@ const apiKvGet = async (key: string) => {
 };
 
 const apiKvSet = async (key: string, value: any) => {
-  await fetch(`/api/kv?action=set&key=${encodeURIComponent(key)}`, {
+  const res = await fetch(`/api/kv?action=set&key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value }),
   });
+  if (!res.ok) {
+    let details = '';
+    try {
+      details = await res.text();
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`KV set failed (${res.status}) ${details}`.trim());
+  }
 };
 
 const CURRENCIES: Record<Currency, { symbol: string; label: string; rateMult?: number }> = {
@@ -256,6 +265,32 @@ const generateHumanLikeName = () => {
 const isValidTronAddress = (val: string) => {
   const v = val.trim();
   return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(v);
+};
+
+const compressContestImageDataUrl = async (src: string): Promise<string> => {
+  if (!src.startsWith('data:image/')) return src;
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Image decode failed'));
+    image.src = src;
+  });
+
+  const maxW = 1280;
+  const maxH = 720;
+  const scale = Math.min(1, maxW / img.width, maxH / img.height);
+  const outW = Math.max(1, Math.round(img.width * scale));
+  const outH = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, outW, outH);
+  return canvas.toDataURL('image/jpeg', 0.7);
 };
 
 const generateRandomTrc20Address = () => {
@@ -723,8 +758,18 @@ const App: React.FC = () => {
     if (!list || (list.length === 0 && contests.length > 0)) {
       if (!window.confirm("Вы уверены, что хотите очистить весь список?")) return;
     }
+    const prev = contests;
     setContests(list);
-    await apiKvSet(DB_KEY, list);
+    try {
+      await apiKvSet(DB_KEY, list);
+    } catch (e) {
+      console.error('Save contests failed:', e);
+      setContests(prev);
+      alert(
+        'Не удалось сохранить розыгрыш на сервере. Обложка может быть слишком большой или сервер отклонил запрос.'
+      );
+      throw e;
+    }
   };
 
   const savePresets = async (list: ProjectPreset[]) => {
@@ -817,6 +862,20 @@ const App: React.FC = () => {
     const normalizedTitle = newTitle.trim();
     const contestTitle = normalizedTitle || 'Розыгрыш без названия';
     const normalizedDescription = newDescription.trim();
+    let normalizedImageUrl = (newImageUrl || '').trim();
+    if (normalizedImageUrl.startsWith('data:image/')) {
+      try {
+        normalizedImageUrl = await compressContestImageDataUrl(normalizedImageUrl);
+      } catch (e) {
+        console.error('Cover compression failed:', e);
+        alert('Не удалось обработать обложку. Используйте другую картинку.');
+        return;
+      }
+      if (normalizedImageUrl.length > 600_000) {
+        alert('Обложка слишком большая. Выберите изображение поменьше или сожмите сильнее.');
+        return;
+      }
+    }
     const winnerCount = Math.max(1, parseInt(newWinners, 10) || 1);
     const parsedRealWinners = parseInt(newRealWinners, 10);
     const realWinnerCount = newIsFakeGiveaway
@@ -843,7 +902,7 @@ const App: React.FC = () => {
       prizeRub: newPrizeType === 'money' ? parseInt(newPrize) : 0,
       prizeType: newPrizeType,
       customPrize: newPrizeType === 'other' ? newCustomPrize : undefined,
-      imageUrl: newImageUrl || undefined,
+      imageUrl: normalizedImageUrl || undefined,
       createdAt: now,
       expiresAt: duration ? now + duration : null,
       participantCount: 0,

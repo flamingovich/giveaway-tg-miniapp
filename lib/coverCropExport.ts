@@ -36,5 +36,6 @@ export async function exportCover16x9Jpeg(imageSrc: string, pixelCrop: Area): Pr
     OUTPUT_W,
     OUTPUT_H
   );
-  return canvas.toDataURL('image/jpeg', 0.88);
+  // Снижаем размер data URL, чтобы запись конкурса не упиралась в лимиты запроса/хранилища.
+  return canvas.toDataURL('image/jpeg', 0.72);
 }
