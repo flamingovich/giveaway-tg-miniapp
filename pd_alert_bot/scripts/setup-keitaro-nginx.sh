@@ -12,6 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$TARGET_DIR"
 
+# Старый конфиг ломал nginx -t (location на уровне http)
+STALE_CONF="/etc/keitaro/nginx/conf.d/pd_alert_bot.conf"
+if [[ -f "$STALE_CONF" ]]; then
+  rm -f "$STALE_CONF"
+  echo "→ Удалён старый $STALE_CONF"
+fi
+
 sed "s/10.89.0.1:8787/${INTERNAL_HOST}:${PORT}/g" \
   "$SCRIPT_DIR/../keitaro/nginx-pd_alert_bot.inc" > "$INC_FILE"
 
