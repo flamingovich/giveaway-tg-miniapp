@@ -56,6 +56,9 @@ export const config = {
   usePolling: process.env.USE_POLLING === '1',
   /** В dev (polling) дедуп выключен — можно гонять curl с одним subid */
   dedupEnabled: process.env.DISABLE_DEDUP === '1' ? false : process.env.USE_POLLING !== '1',
+  adminPanelPassword: (process.env.ADMIN_PANEL_PASSWORD || process.env.WEBHOOK_SECRET || '').trim(),
+  adminUsername: (process.env.ADMIN_USERNAME || 'admin').trim(),
+  internalHost: process.env.INTERNAL_HOST?.trim() || '10.89.0.1',
 };
 
 export function telegramWebhookUrl(): string {

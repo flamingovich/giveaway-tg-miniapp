@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { handleAdminPanel, adminPanelUrl } from './admin-panel.js';
 import { config, HTTP_PREFIX, telegramWebhookUrl } from './config.js';
 import { loadState } from './db.js';
 import { handleKeitaroS2s, handleTelegramUpdate } from './handlers.js';
@@ -21,6 +22,8 @@ function checkSecret(url: URL): boolean {
 export function createServer() {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    if (await handleAdminPanel(req, res, url, () => readBody(req))) return;
 
     if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -77,6 +80,7 @@ export async function bootstrap() {
       console.log(`telegram webhook: ${telegramWebhookUrl()}`);
     }
     console.log(`s2s test: ${config.publicUrl}${HTTP_PREFIX}/s2s?secret=...`);
+    console.log(`admin panel: ${adminPanelUrl()}`);
   });
 
   if (config.usePolling) {

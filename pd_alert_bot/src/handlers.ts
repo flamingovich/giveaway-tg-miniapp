@@ -1,15 +1,19 @@
+import { adminPanelUrl } from './admin-panel.js';
 import { classifyStatus, config, isAdmin, normalizeCampaign, s2sWebhookUrl } from './config.js';
 import {
   aggregateStats,
+  addUserToCampaign,
   bindUser,
   getBindingsForCampaign,
   getKnownCampaigns,
   getUserCampaigns,
   listAllBindings,
+  listByCampaign,
   recordConversion,
   replaceUserCampaigns,
   sumAllDays,
   unbindUser,
+  unbindUserFromCampaign,
 } from './db.js';
 import {
   alertMessage,
@@ -127,7 +131,20 @@ async function handleMessage(message: TgMessage) {
     if (isAdmin(userId)) {
       await sendMessage(
         chatId,
-        `<b>Keitaro Alerts Bot</b>\n\n<b>Админ:</b>\n/bind tg_id CAMPAIGN\n/unbind tg_id\n/users\n/stats\n/s2s — URL для Keitaro\n\n<b>Пользователь:</b>\n/stats`,
+        [
+          '<b>PokerDom Alerts — админка</b>',
+          '',
+          '<b>Кампания → кому слать:</b>',
+          '<code>/add PD_BIODEP 7946967720</code> — добавить',
+          '<code>/del PD_BIODEP 7946967720</code> — убрать с кампании',
+          '<code>/who PD_BIODEP</code> — кто получает алерты',
+          '<code>/campaigns</code> — все кампании и люди',
+          '',
+          '<b>Прочее:</b>',
+          `/admin — веб-админка (${adminPanelUrl()})`,
+          '/stats — статистика',
+          '/s2s — URL для Keitaro',
+        ].join('\n'),
       );
     } else {
       const campaigns = getUserCampaigns(userId);
@@ -165,6 +182,81 @@ async function handleMessage(message: TgMessage) {
   }
 
   if (!isAdmin(userId)) return;
+
+  if (text.startsWith('/add')) {
+    const args = parseArgs(text);
+    if (args.length < 2) {
+      await sendMessage(
+        chatId,
+        'Формат: <code>/add КАМПАНИЯ tg_id</code>\nПример: <code>/add PD_BIODEP 7946967720</code>',
+      );
+      return;
+    }
+    const campaign = normalizeCampaign(args[0]);
+    const tgIds = args.slice(1).map(Number).filter((n) => Number.isFinite(n));
+    if (!tgIds.length) {
+      await sendMessage(chatId, 'Укажи tg_id после названия кампании');
+      return;
+    }
+    for (const tgId of tgIds) await addUserToCampaign(campaign, tgId);
+    await sendMessage(chatId, `✅ <b>${campaign}</b> → ${tgIds.map((id) => `<code>${id}</code>`).join(', ')}`);
+    for (const tgId of tgIds) {
+      try {
+        await sendMessage(tgId, `Вам назначена кампания <b>${campaign}</b>\n\n/stats — статистика`);
+      } catch {
+        /* user must /start bot */
+      }
+    }
+    return;
+  }
+
+  if (text.startsWith('/del')) {
+    const args = parseArgs(text);
+    if (args.length < 2) {
+      await sendMessage(chatId, 'Формат: <code>/del КАМПАНИЯ tg_id</code>');
+      return;
+    }
+    const campaign = normalizeCampaign(args[0]);
+    const tgId = Number(args[1]);
+    if (!Number.isFinite(tgId)) {
+      await sendMessage(chatId, 'Неверный tg_id');
+      return;
+    }
+    await unbindUserFromCampaign(tgId, campaign);
+    await sendMessage(chatId, `✅ Убрано: <code>${tgId}</code> с <b>${campaign}</b>`);
+    return;
+  }
+
+  if (text.startsWith('/who')) {
+    const campaign = normalizeCampaign(parseArgs(text)[0] || '');
+    if (!campaign) {
+      await sendMessage(chatId, 'Формат: <code>/who PD_BIODEP</code>');
+      return;
+    }
+    const tgIds = getBindingsForCampaign(campaign);
+    if (!tgIds.length) {
+      await sendMessage(chatId, `<b>${campaign}</b>\n\nНикому не назначена. Добавь: <code>/add ${campaign} tg_id</code>`);
+      return;
+    }
+    await sendMessage(
+      chatId,
+      `<b>${campaign}</b>\n\nАлерты получают:\n${tgIds.map((id) => `• <code>${id}</code>`).join('\n')}`,
+    );
+    return;
+  }
+
+  if (text.startsWith('/campaigns')) {
+    const rows = listByCampaign();
+    if (!rows.length) {
+      await sendMessage(chatId, 'Кампаний нет. Добавь: <code>/add PD_BIODEP tg_id</code>');
+      return;
+    }
+    const body = rows
+      .map((r) => `<b>${r.campaign}</b>\n${r.tgIds.map((id) => `  • <code>${id}</code>`).join('\n')}`)
+      .join('\n\n');
+    await sendMessage(chatId, `<b>📋 Кампании</b>\n\n${body}`);
+    return;
+  }
 
   if (text.startsWith('/bind')) {
     const args = parseArgs(text);

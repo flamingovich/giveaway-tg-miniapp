@@ -96,6 +96,33 @@ export async function unbindUser(tgId: number) {
   await queuePersist();
 }
 
+export async function unbindUserFromCampaign(tgId: number, campaign: string) {
+  const key = String(tgId);
+  const normalized = campaign.toUpperCase();
+  const next = (state.bindings[key] || []).filter((c) => c.toUpperCase() !== normalized);
+  if (next.length === 0) delete state.bindings[key];
+  else state.bindings[key] = next.sort();
+  await queuePersist();
+}
+
+export async function addUserToCampaign(campaign: string, tgId: number) {
+  await bindUser(tgId, [campaign]);
+}
+
+export function listByCampaign(): Array<{ campaign: string; tgIds: number[] }> {
+  const map = new Map<string, Set<number>>();
+  for (const [tgId, campaigns] of Object.entries(state.bindings)) {
+    for (const c of campaigns) {
+      const key = c.toUpperCase();
+      if (!map.has(key)) map.set(key, new Set());
+      map.get(key)!.add(Number(tgId));
+    }
+  }
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([campaign, ids]) => ({ campaign, tgIds: [...ids].sort((a, b) => a - b) }));
+}
+
 export async function replaceUserCampaigns(tgId: number, campaigns: string[]) {
   const key = String(tgId);
   if (campaigns.length === 0) {
