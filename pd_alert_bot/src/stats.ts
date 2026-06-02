@@ -60,17 +60,28 @@ export function formatMoney(value: number): string {
   return `$${value.toFixed(value % 1 === 0 ? 0 : 2)}`;
 }
 
-export function formatStatsBlock(campaign: string, period: PeriodKey, stats: { reg: number; ftd: number; revenue: number }): string {
+export function formatStatsBlock(
+  campaign: string,
+  period: PeriodKey,
+  stats: { reg: number; ftd: number },
+  opts?: { ftdRate?: number; earnings?: number },
+): string {
   const cr = stats.reg > 0 ? ((stats.ftd / stats.reg) * 100).toFixed(1) : '0.0';
-  return [
+  const lines = [
     `<b>📊 ${campaign}</b>`,
     `<i>${periodLabel(period)}</i>`,
     '',
     `REG: <b>${stats.reg}</b>`,
     `FTD: <b>${stats.ftd}</b>`,
-    `Revenue: <b>${formatMoney(stats.revenue)}</b>`,
     `Reg→Dep: <b>${cr}%</b>`,
-  ].join('\n');
+  ];
+  if (opts?.ftdRate !== undefined && opts.ftdRate > 0) {
+    lines.push(`Ставка: <b>${formatMoney(opts.ftdRate)}</b>/FTD`);
+  }
+  if (opts?.earnings !== undefined && opts.earnings > 0) {
+    lines.push(`К выплате: <b>${formatMoney(opts.earnings)}</b>`);
+  }
+  return lines.join('\n');
 }
 
 export function statsKeyboard(scope: 'user' | 'admin', campaign?: string) {
@@ -114,8 +125,7 @@ function escapeHtml(text: string): string {
 }
 
 export function alertMessage(kind: 'reg' | 'ftd', campaign: string): string {
-  const title =
-    kind === 'reg' ? '<b>➕Регистрация</b>' : '<b>🚨 ➕ФД</b>';
+  const title = kind === 'reg' ? '<b>➕Регистрация</b>' : '<b>🚨 ➕ФД</b>';
   const when = formatAlertDateTime();
   return [title, `<code>${escapeHtml(campaign)}</code>`, '', `<i>${when}</i>`].join('\n');
 }

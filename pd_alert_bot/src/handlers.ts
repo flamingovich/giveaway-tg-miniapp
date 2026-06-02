@@ -1,16 +1,23 @@
 import { adminPanelUrl } from './admin-panel.js';
-import { classifyStatus, config, isAdmin, normalizeCampaign, s2sWebhookUrl } from './config.js';
+import { hasBotAdmin, isSuperAdmin } from './access.js';
+import { classifyStatus, config, normalizeCampaign, s2sWebhookUrl } from './config.js';
 import {
-  aggregateStats,
+  addFullAccess,
   addUserToCampaign,
+  aggregateStats,
   bindUser,
+  earningsForCampaign,
+  getBinding,
   getBindingsForCampaign,
+  getFullAccessIds,
   getKnownCampaigns,
   getUserCampaigns,
   listAllBindings,
   listByCampaign,
   recordConversion,
+  removeFullAccess,
   replaceUserCampaigns,
+  setFtdRate,
   sumAllDays,
   unbindUser,
   unbindUserFromCampaign,
@@ -40,9 +47,25 @@ function statsForCampaign(campaign: string, period: PeriodKey) {
   return aggregateStats(campaign, range.from, range.to);
 }
 
-async function sendCampaignStats(chatId: number, campaign: string, period: PeriodKey, scope: 'user' | 'admin') {
+async function sendCampaignStats(
+  chatId: number,
+  campaign: string,
+  period: PeriodKey,
+  scope: 'user' | 'admin',
+  viewerId?: number,
+) {
   const stats = statsForCampaign(campaign, period);
-  await sendMessage(chatId, formatStatsBlock(campaign, period, stats), statsKeyboard(scope, campaign));
+  const binding = viewerId !== undefined ? getBinding(campaign, viewerId) : undefined;
+  const earnings =
+    binding && binding.ftdRate > 0 ? earningsForCampaign(campaign, stats.ftd, viewerId) : undefined;
+  await sendMessage(
+    chatId,
+    formatStatsBlock(campaign, period, stats, {
+      ftdRate: binding?.ftdRate,
+      earnings,
+    }),
+    statsKeyboard(scope, campaign),
+  );
 }
 
 async function sendUserStatsMenu(chatId: number, userId: number) {
@@ -52,13 +75,17 @@ async function sendUserStatsMenu(chatId: number, userId: number) {
     return;
   }
   if (campaigns.length === 1) {
-    await sendCampaignStats(chatId, campaigns[0], 'today', 'user');
+    await sendCampaignStats(chatId, campaigns[0], 'today', 'user', userId);
     return;
   }
-  const lines = campaigns.map((c) => `• ${c}`).join('\n');
+  const lines = campaigns.map((c) => {
+    const b = getBinding(c, userId);
+    const rate = b?.ftdRate ? ` ($${b.ftdRate}/FTD)` : '';
+    return `• ${c}${rate}`;
+  }).join('\n');
   await sendMessage(
     chatId,
-    `<b>📊 Ваши кампании</b>\n\n${lines}\n\nВыберите период для первой кампании или напишите:\n<code>/stats PD_TANK</code>`,
+    `<b>📊 Ваши кампании</b>\n\n${lines}\n\n/stats PD_TANK — по кампании`,
     statsKeyboard('user', campaigns[0]),
   );
 }
@@ -66,18 +93,25 @@ async function sendUserStatsMenu(chatId: number, userId: number) {
 async function sendAdminOverview(chatId: number, period: PeriodKey) {
   const campaigns = getKnownCampaigns();
   if (campaigns.length === 0) {
-    await sendMessage(chatId, 'Пока нет данных. Настройте /bind или дождитесь первого алерта.');
+    await sendMessage(chatId, 'Пока нет данных. Добавь привязку в админке.');
     return;
   }
   const blocks = campaigns.map((c) => {
     const stats = statsForCampaign(c, period);
-    return `${c}: REG ${stats.reg} | FTD ${stats.ftd} | ${stats.revenue > 0 ? '$' + stats.revenue.toFixed(0) : '$0'}`;
+    return `${c}: REG <b>${stats.reg}</b> | FTD <b>${stats.ftd}</b>`;
   });
   await sendMessage(
     chatId,
     `<b>📊 Все кампании — ${periodLabel(period)}</b>\n\n${blocks.join('\n')}`,
     statsKeyboard('admin'),
   );
+}
+
+function alertRecipients(campaign: string): number[] {
+  const ids = new Set(getBindingsForCampaign(campaign));
+  for (const id of config.adminIds) ids.add(id);
+  for (const id of getFullAccessIds()) ids.add(id);
+  return [...ids];
 }
 
 export async function handleTelegramUpdate(update: Record<string, unknown>) {
@@ -106,11 +140,11 @@ async function handleCallback(cb: TgCallback) {
       return;
     }
     await answerCallback(cb.id);
-    await sendCampaignStats(chatId, normalizeCampaign(target), period, 'user');
+    await sendCampaignStats(chatId, normalizeCampaign(target), period, 'user', cb.from.id);
     return;
   }
 
-  if (parts[0] === 'adm' && parts[1] === 'stats' && isAdmin(cb.from.id)) {
+  if (parts[0] === 'adm' && parts[1] === 'stats' && hasBotAdmin(cb.from.id)) {
     const period = parts[2] as PeriodKey;
     const campaign = parts[3];
     await answerCallback(cb.id);
@@ -126,32 +160,35 @@ async function handleMessage(message: TgMessage) {
   const userId = message.from!.id;
   const chatId = message.chat.id;
   const text = message.text!.trim();
+  const botAdmin = hasBotAdmin(userId);
+  const superAdmin = isSuperAdmin(userId);
 
   if (text.startsWith('/start')) {
-    if (isAdmin(userId)) {
-      await sendMessage(
-        chatId,
-        [
-          '<b>PokerDom Alerts — админка</b>',
-          '',
-          '<b>Кампания → кому слать:</b>',
-          '<code>/add PD_BIODEP 7946967720</code> — добавить',
-          '<code>/del PD_BIODEP 7946967720</code> — убрать с кампании',
-          '<code>/who PD_BIODEP</code> — кто получает алерты',
-          '<code>/campaigns</code> — все кампании и люди',
-          '',
-          '<b>Прочее:</b>',
-          `/admin — веб-админка (${adminPanelUrl()})`,
-          '/stats — статистика',
-          '/s2s — URL для Keitaro',
-        ].join('\n'),
-      );
+    if (botAdmin) {
+      const lines = [
+        '<b>PokerDom Alerts</b>',
+        '',
+        '<b>Кампания → кому слать:</b>',
+        '<code>/add PD_BIODEP 7946967720</code>',
+        '<code>/del PD_BIODEP 7946967720</code>',
+        '<code>/who PD_BIODEP</code>',
+        '<code>/campaigns</code>',
+        '',
+        '/stats — статистика (REG/FTD, без revenue Keitaro)',
+        '/s2s — URL для Keitaro',
+      ];
+      if (superAdmin) {
+        lines.push('', `<b>Веб-админка:</b> ${adminPanelUrl()}`);
+        lines.push('<code>/fullaccess tg_id</code> — полный доступ в боте');
+        lines.push('<code>/revoke tg_id</code> — убрать полный доступ');
+      }
+      await sendMessage(chatId, lines.join('\n'));
     } else {
       const campaigns = getUserCampaigns(userId);
       if (campaigns.length) {
-        await sendMessage(chatId, `Привет! Ваши кампании: <b>${campaigns.join(', ')}</b>\n\n/stats — статистика`);
+        await sendMessage(chatId, `Привет! Кампании: <b>${campaigns.join(', ')}</b>\n\n/stats — статистика`);
       } else {
-        await sendMessage(chatId, 'Привет! Кампания ещё не привязана. Напишите админу ваш Telegram ID.');
+        await sendMessage(chatId, 'Привет! Кампания не привязана. Напишите админу ваш Telegram ID.');
       }
     }
     return;
@@ -159,11 +196,11 @@ async function handleMessage(message: TgMessage) {
 
   if (text.startsWith('/stats')) {
     const arg = parseArgs(text)[0];
-    if (isAdmin(userId) && !arg) {
+    if (botAdmin && !arg) {
       await sendAdminOverview(chatId, 'today');
       return;
     }
-    if (isAdmin(userId) && arg) {
+    if (botAdmin && arg) {
       await sendCampaignStats(chatId, normalizeCampaign(arg), 'today', 'admin');
       return;
     }
@@ -174,39 +211,81 @@ async function handleMessage(message: TgMessage) {
         await sendMessage(chatId, 'Эта кампания вам не назначена.');
         return;
       }
-      await sendCampaignStats(chatId, target, 'today', 'user');
+      await sendCampaignStats(chatId, target, 'today', 'user', userId);
       return;
     }
     await sendUserStatsMenu(chatId, userId);
     return;
   }
 
-  if (!isAdmin(userId)) return;
+  if (!botAdmin) return;
+
+  if (text.startsWith('/fullaccess') && superAdmin) {
+    const tgId = Number(parseArgs(text)[0]);
+    if (!Number.isFinite(tgId)) {
+      await sendMessage(chatId, 'Формат: <code>/fullaccess tg_id</code>');
+      return;
+    }
+    await addFullAccess(tgId);
+    await sendMessage(chatId, `✅ Полный доступ в боте: <code>${tgId}</code>`);
+    try {
+      await sendMessage(tgId, 'Вам выдан <b>полный доступ</b> в боте (как у админа).\n\n/stats — все кампании');
+    } catch {
+      /* need /start */
+    }
+    return;
+  }
+
+  if (text.startsWith('/revoke') && superAdmin) {
+    const tgId = Number(parseArgs(text)[0]);
+    if (!Number.isFinite(tgId)) {
+      await sendMessage(chatId, 'Формат: <code>/revoke tg_id</code>');
+      return;
+    }
+    await removeFullAccess(tgId);
+    await sendMessage(chatId, `✅ Полный доступ снят: <code>${tgId}</code>`);
+    return;
+  }
 
   if (text.startsWith('/add')) {
     const args = parseArgs(text);
     if (args.length < 2) {
-      await sendMessage(
-        chatId,
-        'Формат: <code>/add КАМПАНИЯ tg_id</code>\nПример: <code>/add PD_BIODEP 7946967720</code>',
-      );
+      await sendMessage(chatId, 'Формат: <code>/add КАМПАНИЯ tg_id [ставка]</code>');
       return;
     }
     const campaign = normalizeCampaign(args[0]);
-    const tgIds = args.slice(1).map(Number).filter((n) => Number.isFinite(n));
-    if (!tgIds.length) {
-      await sendMessage(chatId, 'Укажи tg_id после названия кампании');
+    const tgId = Number(args[1]);
+    const rate = args[2] !== undefined ? Number(args[2]) : 0;
+    if (!Number.isFinite(tgId)) {
+      await sendMessage(chatId, 'Неверный tg_id');
       return;
     }
-    for (const tgId of tgIds) await addUserToCampaign(campaign, tgId);
-    await sendMessage(chatId, `✅ <b>${campaign}</b> → ${tgIds.map((id) => `<code>${id}</code>`).join(', ')}`);
-    for (const tgId of tgIds) {
-      try {
-        await sendMessage(tgId, `Вам назначена кампания <b>${campaign}</b>\n\n/stats — статистика`);
-      } catch {
-        /* user must /start bot */
-      }
+    await addUserToCampaign(campaign, tgId, Number.isFinite(rate) ? rate : 0);
+    const rateMsg = rate > 0 ? `, ставка $${rate}/FTD` : '';
+    await sendMessage(chatId, `✅ <b>${campaign}</b> → <code>${tgId}</code>${rateMsg}`);
+    try {
+      await sendMessage(tgId, `Кампания <b>${campaign}</b>${rateMsg}\n\n/stats — статистика`);
+    } catch {
+      /* */
     }
+    return;
+  }
+
+  if (text.startsWith('/rate')) {
+    const args = parseArgs(text);
+    if (args.length < 3) {
+      await sendMessage(chatId, 'Формат: <code>/rate КАМПАНИЯ tg_id 28</code>');
+      return;
+    }
+    const campaign = normalizeCampaign(args[0]);
+    const tgId = Number(args[1]);
+    const rate = Number(args[2]);
+    if (!Number.isFinite(tgId) || !Number.isFinite(rate)) {
+      await sendMessage(chatId, 'Неверные параметры');
+      return;
+    }
+    const ok = await setFtdRate(campaign, tgId, rate);
+    await sendMessage(chatId, ok ? `✅ Ставка <b>${campaign}</b> → <code>${tgId}</code>: $${rate}/FTD` : 'Привязка не найдена');
     return;
   }
 
@@ -233,35 +312,49 @@ async function handleMessage(message: TgMessage) {
       await sendMessage(chatId, 'Формат: <code>/who PD_BIODEP</code>');
       return;
     }
-    const tgIds = getBindingsForCampaign(campaign);
-    if (!tgIds.length) {
-      await sendMessage(chatId, `<b>${campaign}</b>\n\nНикому не назначена. Добавь: <code>/add ${campaign} tg_id</code>`);
+    const rows = listByCampaign().find((r) => r.campaign === campaign);
+    if (!rows?.entries.length) {
+      await sendMessage(chatId, `<b>${campaign}</b>\n\nНикому не назначена.`);
       return;
     }
-    await sendMessage(
-      chatId,
-      `<b>${campaign}</b>\n\nАлерты получают:\n${tgIds.map((id) => `• <code>${id}</code>`).join('\n')}`,
-    );
+    const body = rows.entries
+      .map((e) => `• <code>${e.tgId}</code>${e.ftdRate > 0 ? ` — $${e.ftdRate}/FTD` : ''}`)
+      .join('\n');
+    await sendMessage(chatId, `<b>${campaign}</b>\n\n${body}`);
     return;
   }
 
   if (text.startsWith('/campaigns')) {
     const rows = listByCampaign();
     if (!rows.length) {
-      await sendMessage(chatId, 'Кампаний нет. Добавь: <code>/add PD_BIODEP tg_id</code>');
+      await sendMessage(chatId, 'Кампаний нет.');
       return;
     }
     const body = rows
-      .map((r) => `<b>${r.campaign}</b>\n${r.tgIds.map((id) => `  • <code>${id}</code>`).join('\n')}`)
+      .map((r) => {
+        const users = r.entries
+          .map((e) => `  • <code>${e.tgId}</code>${e.ftdRate > 0 ? ` $${e.ftdRate}/FTD` : ''}`)
+          .join('\n');
+        return `<b>${r.campaign}</b>\n${users}`;
+      })
       .join('\n\n');
     await sendMessage(chatId, `<b>📋 Кампании</b>\n\n${body}`);
+    return;
+  }
+
+  if (text.startsWith('/fullusers') && superAdmin) {
+    const ids = getFullAccessIds();
+    await sendMessage(
+      chatId,
+      ids.length ? `<b>Полный доступ:</b>\n${ids.map((id) => `• <code>${id}</code>`).join('\n')}` : 'Список пуст.',
+    );
     return;
   }
 
   if (text.startsWith('/bind')) {
     const args = parseArgs(text);
     if (args.length < 2) {
-      await sendMessage(chatId, 'Формат: <code>/bind tg_id CAMPAIGN [CAMPAIGN2]</code>\nПример: <code>/bind 7946967720 PD_BIODEP</code>');
+      await sendMessage(chatId, 'Формат: <code>/bind tg_id CAMPAIGN</code>');
       return;
     }
     const tgId = Number(args[0]);
@@ -271,19 +364,14 @@ async function handleMessage(message: TgMessage) {
       return;
     }
     await bindUser(tgId, campaigns);
-    await sendMessage(chatId, `✅ Привязано: <code>${tgId}</code> → <b>${campaigns.join(', ')}</b>`);
-    try {
-      await sendMessage(tgId, `Вам назначены кампании: <b>${campaigns.join(', ')}</b>\n\n/stats — статистика\nАлерты REG/FTD будут приходить сюда.`);
-    } catch {
-      await sendMessage(chatId, 'Привязка сохранена. Пользователь должен нажать /start в боте.');
-    }
+    await sendMessage(chatId, `✅ <code>${tgId}</code> → <b>${campaigns.join(', ')}</b>`);
     return;
   }
 
   if (text.startsWith('/setbind')) {
     const args = parseArgs(text);
     if (args.length < 2) {
-      await sendMessage(chatId, 'Формат: <code>/setbind tg_id CAMPAIGN [CAMPAIGN2]</code> — заменить список кампаний');
+      await sendMessage(chatId, 'Формат: <code>/setbind tg_id CAMPAIGN</code>');
       return;
     }
     const tgId = Number(args[0]);
@@ -293,13 +381,12 @@ async function handleMessage(message: TgMessage) {
       return;
     }
     await replaceUserCampaigns(tgId, campaigns);
-    await sendMessage(chatId, `✅ Обновлено: <code>${tgId}</code> → <b>${campaigns.join(', ') || '—'}</b>`);
+    await sendMessage(chatId, `✅ Обновлено: <code>${tgId}</code>`);
     return;
   }
 
   if (text.startsWith('/unbind')) {
-    const args = parseArgs(text);
-    const tgId = Number(args[0]);
+    const tgId = Number(parseArgs(text)[0]);
     if (!Number.isFinite(tgId)) {
       await sendMessage(chatId, 'Формат: <code>/unbind tg_id</code>');
       return;
@@ -315,7 +402,12 @@ async function handleMessage(message: TgMessage) {
       await sendMessage(chatId, 'Привязок нет.');
       return;
     }
-    const body = rows.map((r) => `<code>${r.tgId}</code> → ${r.campaigns.join(', ')}`).join('\n');
+    const body = rows
+      .map((r) => {
+        const camps = r.campaigns.map((c) => `${c.name}${c.ftdRate > 0 ? ` $${c.ftdRate}` : ''}`).join(', ');
+        return `<code>${r.tgId}</code> → ${camps}`;
+      })
+      .join('\n');
     await sendMessage(chatId, `<b>👥 Привязки</b>\n\n${body}`);
     return;
   }
@@ -323,13 +415,13 @@ async function handleMessage(message: TgMessage) {
   if (text.startsWith('/s2s')) {
     await sendMessage(
       chatId,
-      `<b>S2S URL для Keitaro</b>\n\nВставь в каждую кампанию → S2S postbacks:\n\n<code>${s2sWebhookUrl()}</code>\n\nСтатусы: registration, sale\nМетод: GET`,
+      `<b>S2S URL</b>\n\n<code>${s2sWebhookUrl()}</code>\n\nRevenue из Keitaro в отчёты не попадает.`,
     );
     return;
   }
 
   if (text.startsWith('/ping')) {
-    await sendMessage(chatId, `OK · ${dayKeyNow()} · ${config.timezone}`);
+    await sendMessage(chatId, `OK · ${dayKeyNow()}`);
   }
 }
 
@@ -337,8 +429,6 @@ export async function handleKeitaroS2s(searchParams: URLSearchParams): Promise<{
   const campaign = normalizeCampaign(searchParams.get('campaign') || searchParams.get('campaign_name') || '');
   const status = (searchParams.get('status') || '').trim();
   const subid = (searchParams.get('subid') || '').trim();
-  const revenueRaw = searchParams.get('revenue') || searchParams.get('payout') || '0';
-  const revenue = Number(revenueRaw) || 0;
 
   if (!campaign || !status) {
     return { ok: false, message: 'missing campaign or status' };
@@ -355,23 +445,15 @@ export async function handleKeitaroS2s(searchParams: URLSearchParams): Promise<{
     campaign,
     dayKey,
     kind,
-    revenue: kind === 'ftd' ? revenue : 0,
     dedupKey,
   });
 
   if (!recorded) {
-    return {
-      ok: true,
-      message:
-        'duplicate — этот subid уже был. Для теста: другой subid (test2) или npm run dev (дедуп выкл) или rm data/state.json',
-    };
+    return { ok: true, message: 'duplicate' };
   }
 
   const text = alertMessage(kind, campaign);
-  const recipients = getBindingsForCampaign(campaign);
-  for (const adminId of config.adminIds) {
-    if (!recipients.includes(adminId)) recipients.push(adminId);
-  }
+  const recipients = alertRecipients(campaign);
 
   let sent = 0;
   for (const tgId of recipients) {

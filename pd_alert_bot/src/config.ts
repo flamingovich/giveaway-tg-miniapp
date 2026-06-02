@@ -70,6 +70,3 @@ export function s2sWebhookUrl(): string {
   return `${base}&campaign={campaign_name}&status={status}&revenue={conversion_revenue}&subid={subid}`;
 }
 
-export function isAdmin(userId: number): boolean {
-  return config.adminIds.has(userId);
-}
