@@ -15,6 +15,8 @@ export type DayStats = {
 export type CampaignBinding = {
   tgId: number;
   ftdRate: number;
+  /** Сколько уже выплачено стримеру по этой кампании (вручную в админке) */
+  paidTotal: number;
 };
 
 export type BotState = {
@@ -60,6 +62,7 @@ function migrateLegacy(raw: Record<string, unknown>): BotState {
       base.links[camp.toUpperCase()] = (list || []).map((b) => ({
         tgId: Number(b.tgId),
         ftdRate: Number(b.ftdRate) || 0,
+        paidTotal: Number(b.paidTotal) || 0,
       }));
     }
     return base;
@@ -74,7 +77,7 @@ function migrateLegacy(raw: Record<string, unknown>): BotState {
         const camp = c.toUpperCase();
         if (!base.links[camp]) base.links[camp] = [];
         if (!base.links[camp].some((b) => b.tgId === tgId)) {
-          base.links[camp].push({ tgId, ftdRate: 0 });
+          base.links[camp].push({ tgId, ftdRate: 0, paidTotal: 0 });
         }
       }
     }
@@ -90,7 +93,7 @@ function seedInitialBindings(target: BotState) {
       if (!target.links[camp]) target.links[camp] = [];
       const id = Number(tgId);
       if (!target.links[camp].some((b) => b.tgId === id)) {
-        target.links[camp].push({ tgId: id, ftdRate: 0 });
+        target.links[camp].push({ tgId: id, ftdRate: 0, paidTotal: 0 });
       }
     }
   }
@@ -169,7 +172,7 @@ export async function addUserToCampaign(campaign: string, tgId: number, ftdRate 
   if (existing) {
     if (ftdRate > 0) existing.ftdRate = ftdRate;
   } else {
-    state.links[camp].push({ tgId, ftdRate });
+    state.links[camp].push({ tgId, ftdRate, paidTotal: 0 });
     state.links[camp].sort((a, b) => a.tgId - b.tgId);
   }
   await queuePersist();
@@ -184,6 +187,31 @@ export async function setFtdRate(campaign: string, tgId: number, ftdRate: number
     return true;
   }
   return false;
+}
+
+export async function setPaidTotal(campaign: string, tgId: number, paidTotal: number) {
+  const camp = campaign.toUpperCase();
+  const entry = state.links[camp]?.find((b) => b.tgId === tgId);
+  if (entry) {
+    entry.paidTotal = Math.max(0, paidTotal);
+    await queuePersist();
+    return true;
+  }
+  return false;
+}
+
+/** Заработано за всё время: FTD (все дни) × ставка */
+export function bindingEarningsAllTime(campaign: string, tgId: number): number {
+  const b = getBinding(campaign, tgId);
+  if (!b || b.ftdRate <= 0) return 0;
+  return b.ftdRate * sumAllDays(campaign.toUpperCase()).ftd;
+}
+
+/** Остаток к выплате: заработано − уже выплачено */
+export function bindingOutstanding(campaign: string, tgId: number): number {
+  const b = getBinding(campaign, tgId);
+  if (!b) return 0;
+  return Math.max(0, bindingEarningsAllTime(campaign, tgId) - b.paidTotal);
 }
 
 export async function unbindUserFromCampaign(tgId: number, campaign: string) {
@@ -211,12 +239,15 @@ export async function replaceUserCampaigns(tgId: number, campaigns: string[]) {
   for (const c of campaigns) await addUserToCampaign(c, tgId);
 }
 
-export function listAllBindings(): Array<{ tgId: number; campaigns: Array<{ name: string; ftdRate: number }> }> {
-  const map = new Map<number, Array<{ name: string; ftdRate: number }>>();
+export function listAllBindings(): Array<{
+  tgId: number;
+  campaigns: Array<{ name: string; ftdRate: number; paidTotal: number }>;
+}> {
+  const map = new Map<number, Array<{ name: string; ftdRate: number; paidTotal: number }>>();
   for (const [camp, list] of Object.entries(state.links)) {
     for (const b of list) {
       if (!map.has(b.tgId)) map.set(b.tgId, []);
-      map.get(b.tgId)!.push({ name: camp, ftdRate: b.ftdRate });
+      map.get(b.tgId)!.push({ name: camp, ftdRate: b.ftdRate, paidTotal: b.paidTotal });
     }
   }
   return [...map.entries()]

@@ -4,12 +4,17 @@ import { config, HTTP_PREFIX, normalizeCampaign } from './config.js';
 import {
   addFullAccess,
   addUserToCampaign,
+  bindingEarningsAllTime,
+  bindingOutstanding,
   getFullAccessIds,
   listByCampaign,
   removeFullAccess,
   setFtdRate,
+  setPaidTotal,
+  sumAllDays,
   unbindUserFromCampaign,
 } from './db.js';
+import { formatMoney } from './stats.js';
 
 const ADMIN_BASE = `${HTTP_PREFIX}/admin`;
 const sessions = new Set<string>();
@@ -81,6 +86,9 @@ function htmlPage(body: string, title = 'PD Alerts Admin'): string {
     .hint { font-size: 0.85rem; color: #9aa0a6; line-height: 1.5; }
     .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     .badge { color: #8fd18f; font-size: 0.85rem; }
+    .payout { font-size: 0.85rem; color: #9aa0a6; margin-top: 4px; line-height: 1.5; }
+    .payout strong { color: #e8eaed; }
+    .payout .due { color: #ffb74d; }
   </style>
 </head>
 <body><div class="wrap">${body}</div></body></html>`;
@@ -120,12 +128,23 @@ function dashboardPage(message = ''): string {
       <div class="card">
         <div class="camp">${r.campaign}</div>
         ${r.entries
-          .map(
-            (e) => `
+          .map((e) => {
+            const allFtd = sumAllDays(r.campaign).ftd;
+            const earned = bindingEarningsAllTime(r.campaign, e.tgId);
+            const paid = e.paidTotal ?? 0;
+            const due = bindingOutstanding(r.campaign, e.tgId);
+            return `
           <div class="user">
             <div class="user-meta">
               <code>${e.tgId}</code>
               <span class="badge">${e.ftdRate > 0 ? `$${e.ftdRate}/FTD` : 'ставка не задана'}</span>
+              <div class="payout">
+                FTD всего: <strong>${allFtd}</strong>
+                ${e.ftdRate > 0 ? ` · заработано: <strong>${formatMoney(earned)}</strong>` : ''}
+                <br>
+                Выплачено: <strong>${formatMoney(paid)}</strong>
+                ${e.ftdRate > 0 ? ` · <span class="due">к выплате: <strong>${formatMoney(due)}</strong></span>` : ''}
+              </div>
             </div>
             <div class="user-actions">
               <form class="inline-form" method="post" action="${ADMIN_BASE}/set-rate">
@@ -134,14 +153,20 @@ function dashboardPage(message = ''): string {
                 <input name="ftdRate" type="number" step="0.01" min="0" placeholder="$" value="${e.ftdRate || ''}">
                 <button class="ghost small" type="submit">Ставка</button>
               </form>
+              <form class="inline-form" method="post" action="${ADMIN_BASE}/set-paid">
+                <input type="hidden" name="campaign" value="${r.campaign}">
+                <input type="hidden" name="tgId" value="${e.tgId}">
+                <input name="paidTotal" type="number" step="0.01" min="0" placeholder="выплачено" value="${paid || ''}">
+                <button class="ghost small" type="submit">Выплачено</button>
+              </form>
               <form method="post" action="${ADMIN_BASE}/remove" style="margin:0">
                 <input type="hidden" name="campaign" value="${r.campaign}">
                 <input type="hidden" name="tgId" value="${e.tgId}">
                 <button class="danger" type="submit">Убрать</button>
               </form>
             </div>
-          </div>`,
-          )
+          </div>`;
+          })
           .join('')}
       </div>`,
           )
@@ -174,7 +199,7 @@ function dashboardPage(message = ''): string {
       <form method="post" action="${ADMIN_BASE}/logout"><button class="ghost" type="submit">Выйти</button></form>
     </div>
     ${message ? `<div class="msg">${message}</div>` : ''}
-    <p class="hint">Revenue из Keitaro в отчёты <b>не попадает</b>. К выплате считается только FTD × ваша ставка.</p>
+    <p class="hint">Revenue из Keitaro в отчёты <b>не попадает</b>. Заработано = FTD за всё время × ставка. <b>К выплате</b> = заработано − уже выплачено (поле «Выплачено»).</p>
 
     <div class="card">
       <form method="post" action="${ADMIN_BASE}/add">
@@ -306,6 +331,19 @@ export async function handleAdminPanel(
     return true;
   }
 
+  if (sub === '/set-paid' && req.method === 'POST') {
+    const body = parseFormBody(await readBody());
+    const campaign = normalizeCampaign(body.campaign || '');
+    const tgId = Number(body.tgId);
+    const paidTotal = Number(body.paidTotal);
+    if (campaign && Number.isFinite(tgId) && Number.isFinite(paidTotal)) {
+      await setPaidTotal(campaign, tgId, paidTotal);
+    }
+    res.writeHead(303, { Location: `${ADMIN_BASE}?ok=paid` });
+    res.end();
+    return true;
+  }
+
   if (sub === '/remove' && req.method === 'POST') {
     const body = parseFormBody(await readBody());
     const campaign = normalizeCampaign(body.campaign || '');
@@ -339,6 +377,7 @@ export async function handleAdminPanel(
     const msgs: Record<string, string> = {
       added: 'Привязка добавлена',
       rate: 'Ставка обновлена',
+      paid: 'Выплачено обновлено',
       full: 'Полный доступ выдан',
       invalid: 'Проверь поля',
     };

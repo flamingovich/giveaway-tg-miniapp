@@ -64,7 +64,7 @@ export function formatStatsBlock(
   campaign: string,
   period: PeriodKey,
   stats: { reg: number; ftd: number },
-  opts?: { ftdRate?: number; earnings?: number },
+  opts?: { ftdRate?: number; outstanding?: number },
 ): string {
   const cr = stats.reg > 0 ? ((stats.ftd / stats.reg) * 100).toFixed(1) : '0.0';
   const lines = [
@@ -77,9 +77,9 @@ export function formatStatsBlock(
   ];
   if (opts?.ftdRate !== undefined && opts.ftdRate > 0) {
     lines.push(`Ставка: <b>${formatMoney(opts.ftdRate)}</b>/FTD`);
-  }
-  if (opts?.earnings !== undefined && opts.earnings > 0) {
-    lines.push(`К выплате: <b>${formatMoney(opts.earnings)}</b>`);
+    if (opts.outstanding !== undefined) {
+      lines.push(`К выплате: <b>${formatMoney(opts.outstanding)}</b>`);
+    }
   }
   return lines.join('\n');
 }

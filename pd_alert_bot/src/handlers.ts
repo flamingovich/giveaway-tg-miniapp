@@ -6,7 +6,7 @@ import {
   addUserToCampaign,
   aggregateStats,
   bindUser,
-  earningsForCampaign,
+  bindingOutstanding,
   getBinding,
   getBindingsForCampaign,
   getFullAccessIds,
@@ -56,13 +56,13 @@ async function sendCampaignStats(
 ) {
   const stats = statsForCampaign(campaign, period);
   const binding = viewerId !== undefined ? getBinding(campaign, viewerId) : undefined;
-  const earnings =
-    binding && binding.ftdRate > 0 ? earningsForCampaign(campaign, stats.ftd, viewerId) : undefined;
+  const outstanding =
+    binding && binding.ftdRate > 0 ? bindingOutstanding(campaign, viewerId!) : undefined;
   await sendMessage(
     chatId,
     formatStatsBlock(campaign, period, stats, {
       ftdRate: binding?.ftdRate,
-      earnings,
+      outstanding,
     }),
     statsKeyboard(scope, campaign),
   );
